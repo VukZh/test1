@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Входящие заявки</title>
+  <style>
+    body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; color: #1e293b; }
+    textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
+    button { padding: .4rem .8rem; font: inherit; cursor: pointer; }
+    .card { margin-top: 1rem; padding: 1rem; border: 1px solid #cbd5e1; border-radius: .375rem; background: #f8fafc; }
+    .card[hidden] { display: none; }
+    .status-ready { border-color: #16a34a; background: #f0fdf4; }
+    .status-manual { border-color: #d97706; background: #fffbeb; }
+    .status-error { border-color: #dc2626; background: #fef2f2; }
+    .field { margin-top: .5rem; }
+    .label { font-weight: 600; }
+    pre { white-space: pre-wrap; margin: .25rem 0 0; font: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Входящие заявки</h1>
+  <form id="triage-form" novalidate>
+    <label for="message">Текст заявки1</label>
+    <textarea id="message" rows="4" placeholder="Введите текст обращения клиента..."></textarea>
+    <button type="submit" id="submit-btn">Разобрать заявку</button>
+  </form>
+
+  <section id="result" class="card" aria-live="polite" hidden>
+    <div id="status-message" class="label"></div>
+    <div id="topic-row" class="field" hidden>
+      <span class="label">Тема:</span> <span id="topic"></span>
+    </div>
+    <div id="draft-row" class="field" hidden>
+      <div class="label">Черновик ответа:</div>
+      <pre id="draft"></pre>
+    </div>
+  </section>
+
+  <script type="module">
+    const form = document.querySelector("#triage-form");
+    const messageInput = document.querySelector("#message");
+    const resultBox = document.querySelector("#result");
+    const statusMessage = document.querySelector("#status-message");
+    const topicRow = document.querySelector("#topic-row");
+    const topicEl = document.querySelector("#topic");
+    const draftRow = document.querySelector("#draft-row");
+    const draftEl = document.querySelector("#draft");
+
+    let activeController = null;
+    let latestRequestId = 0;
+
+    function clearDraftAndTopic() {
+      topicEl.textContent = "";
+      draftEl.textContent = "";
+      topicRow.hidden = true;
+      draftRow.hidden = true;
+    }
+
+    function renderState({ type, message, topic = null, draft = null }) {
+      resultBox.hidden = false;
+      resultBox.className = `card ${type}`;
+      statusMessage.textContent = message;
+
+      if (topic && draft) {
+        topicEl.textContent = topic;
+        draftEl.textContent = draft;
+        topicRow.hidden = false;
+        draftRow.hidden = false;
+      } else {
+        clearDraftAndTopic();
+      }
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const requestId = ++latestRequestId;
+      if (activeController) {
+        activeController.abort();
+      }
+      const controller = new AbortController();
+      activeController = controller;
+
+      clearDraftAndTopic();
+
+      const rawText = messageInput.value;
+      if (typeof rawText !== "string" || rawText.trim().length === 0) {
+        renderState({
+          type: "status-error",
+          message: "Ошибка ввода (invalid_input): введите непустой текст заявки.",
+        });
+        return;
+      }
+
+      try {
+        const reply = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: rawText }),
+          signal: controller.signal,
+        });
+
+        const data = await reply.json();
+        if (requestId !== latestRequestId) return;
+
+        if (!reply.ok || data.status === "invalid_input") {
+          renderState({
+            type: "status-error",
+            message: "Ошибка ввода (invalid_input): введите непустой текст заявки.",
+          });
+          return;
+        }
+
+        if (data.status === "ready" && data.topic && data.draft) {
+          renderState({
+            type: "status-ready",
+            message: "Готово (ready): тема и черновик ответа сформированы.",
+            topic: data.topic,
+            draft: data.draft,
+          });
+          return;
+        }
+
+        renderState({
+          type: "status-manual",
+          message: "Требуется ручной разбор (manual_review): автоматический черновик не сформирован. Напишите ответ клиенту вручную.",
+        });
+      } catch (err) {
+        if (err && err.name === "AbortError") return;
+        if (requestId !== latestRequestId) return;
+
+        renderState({
+          type: "status-manual",
+          message: "Требуется ручной разбор (manual_review): сбой запроса к сервису. Напишите ответ клиенту вручную.",
+        });
+      }
+    });
+  </script>
+</body>
+</html>
